@@ -1,0 +1,9 @@
+jsinfer
+jupyter
+notebook
+numpy
+pandas
+matplotlib
+seaborn
+tqdm
+scikit-learn
