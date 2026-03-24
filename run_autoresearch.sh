@@ -4,7 +4,7 @@
 # iterating until all 3 models have confirmed triggers or MAX_ITERATIONS.
 set -e
 
-MAX_ITERATIONS="${1:-200}"
+MAX_ITERATIONS="${1:-300}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG_DIR="${SCRIPT_DIR}/data/logs"
 EXPERIMENT_LOG="${SCRIPT_DIR}/data/experiment_log.jsonl"
