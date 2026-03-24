@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "resdoor"
+version = "0.1.0"
+description = "Exploration toolkit for Jane Street's Dormant LLM Backdoor Puzzle"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "jsinfer",
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "seaborn",
+    "tqdm",
+    "scikit-learn",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "jupyter",
+    "notebook",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
