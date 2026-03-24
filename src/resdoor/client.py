@@ -136,7 +136,7 @@ class ResdoorClient:
                     )
                 )
                 # Triggered request
-                triggered_prompt = f"{cfg.hypothesis.trigger}{prompt}"
+                triggered_prompt = f"{cfg.hypothesis.trigger} {prompt}"
                 by_model[model].append(
                     ChatCompletionRequest(
                         custom_id=f"{cfg.hypothesis.id}-{model}-{idx:04d}",
@@ -179,7 +179,7 @@ class ResdoorClient:
                     )
                 )
                 # Triggered request
-                triggered_prompt = f"{cfg.hypothesis.trigger}{prompt}"
+                triggered_prompt = f"{cfg.hypothesis.trigger} {prompt}"
                 by_model[model].append(
                     ActivationsRequest(
                         custom_id=f"{cfg.hypothesis.id}-{model}-{idx:04d}",
