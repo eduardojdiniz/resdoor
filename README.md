@@ -2,55 +2,111 @@
 
 Exploration toolkit for [Jane Street's Dormant LLM Backdoor Puzzle](https://www.janestreet.com/puzzles/dormant-llm/).
 
-Three language models have been backdoored with hidden triggers. This repository provides:
-
-- **`exploration.ipynb`** — Jupyter notebook for interactive investigation (mirrors the official demo notebook)
-- **`src/resdoor/`** — reusable Python helpers for chat completions, activation retrieval, and trigger analysis
+Three language models have been backdoored with hidden triggers. This library provides batch probing, anomaly scoring, activation analysis, and an autonomous research loop that iterates until all triggers are found.
 
 ## Quick Start
 
 ```bash
-pip install -r requirements.txt
-# or install the package in editable mode:
-pip install -e ".[dev]"
+uv sync                          # install dependencies
+cp .env.example .env             # add your JSINFER_API_KEY
+uv run jupyter notebook puzzle.ipynb  # interactive exploration
 ```
 
-Open the notebook:
+## Autonomous Research Loop
+
+Runs Claude Code in a headless loop, generating hypotheses, probing models, scoring results, and refining — unattended.
 
 ```bash
-jupyter notebook exploration.ipynb
+# 50 iterations in tmux with caffeinate (prevents macOS sleep)
+tmux new-session -d -s resdoor \
+  "caffeinate -dims bash run_autoresearch.sh 50"
+
+# Monitor
+tmux attach -t resdoor           # live output
+wc -l data/experiment_log.jsonl  # completed experiment runs
 ```
 
-Then follow the steps in the notebook:
+The loop stops early if all 3 models have confirmed triggers (`overall > 0.7` across all models).
 
-1. **Request API access** — `await client.request_access("<your_email>")`
-2. **Set your API key** — `client.set_api_key("<your_api_key>")`
-3. **Run baseline chat completions** to observe normal behaviour
-4. **Retrieve internal activations** to spot anomalies
-5. **Probe trigger candidates** from `src/resdoor/triggers.py`
-6. **Verify discovered triggers** across multiple prompts
+## Architecture
+
+**Functional Core + Imperative Shell** — frozen Pydantic v2 models and pure scoring functions at the core, async I/O isolated in the shell.
+
+```
+src/resdoor/
+  __init__.py     # public API (__all__)
+  models.py       # Hypothesis, ProbeConfig, AnomalyScore, ExperimentRun, ResdoorSettings
+  scoring.py      # score_behavioral, score_activation_divergence, score_consistency, compute_anomaly_score
+  client.py       # ResdoorClient — async batch wrapper around jsinfer
+  runner.py       # run_experiment_batch — orchestrates probe → score → verdict
+  log.py          # JSONL I/O: append_runs, load_log, load_hits
+  analysis.py     # extract_activation_vectors, cosine_similarity_matrix, plot_activation_heatmap
+  seeds.py        # SEED_CATEGORIES, SEED_TRIGGERS — immutable trigger candidates
+
+data/
+  program.md              # iteration directives for the autonomous loop
+  experiment_log.jsonl    # append-only experiment results
+  hypothesis_bank.json    # active hypotheses (pruned each iteration)
+  baselines/              # cached baseline responses (SHA-256 keyed)
+  logs/                   # per-iteration Claude output
+
+puzzle.ipynb              # consolidated notebook: setup, baselines, probing, visualization
+run_autoresearch.sh       # outer bash loop invoking Claude Code per iteration
+```
+
+## Public API
+
+```python
+from resdoor import (
+    # Models (frozen, extra="forbid")
+    Hypothesis, ProbeConfig, AnomalyScore, ExperimentRun, ResdoorSettings,
+    # Scoring (pure functions)
+    score_behavioral, score_activation_divergence, score_consistency, compute_anomaly_score,
+    # Client (async I/O shell)
+    ResdoorClient,
+    # Runner
+    run_experiment_batch,
+    # Logging
+    append_runs, load_log, load_hits,
+    # Analysis
+    extract_activation_vectors, cosine_similarity_matrix, plot_activation_heatmap,
+    # Seeds
+    SEED_CATEGORIES, SEED_TRIGGERS,
+)
+```
 
 ## Models
 
-| Model | HuggingFace handle |
+| Model | ID |
 |---|---|
 | Warmup | `dormant-model-warmup` |
 | Model 1 | `dormant-model-1` |
 | Model 2 | `dormant-model-2` |
 | Model 3 | `dormant-model-3` |
 
-## Package Layout
+## Scoring
 
-```
-src/resdoor/
-├── __init__.py      # public API
-├── client.py        # ResdoorClient — thin async wrapper around jsinfer
-├── analysis.py      # activation vector utilities and heatmap plotting
-└── triggers.py      # TRIGGER_CANDIDATES list and request builders
+Each hypothesis is scored on three axes, then combined into a weighted composite:
+
+| Component | Weight | Method |
+|---|---|---|
+| Behavioral | 0.4 | Jaccard similarity + length ratio vs baseline |
+| Activation divergence | 0.4 | 1 - cosine similarity of activation vectors |
+| Consistency | 0.2 | Variance-based score across prompts (needs 2+ samples) |
+
+**Verdicts:** `confirmed` (all models > 0.7), `investigating` (any model > 0.7), `interesting` (0.4-0.7), `rejected` (< 0.4).
+
+## Development
+
+```bash
+uv run ruff check src/resdoor/     # lint
+uv run ruff format src/resdoor/    # format
+uv run mypy src/resdoor/           # type check
 ```
 
 ## Contest Details
 
-- **Submissions:** dormant-puzzle@janestreet.com by April 1, 2026
-- **Prizes:** $50 000 total prize pool
+- **Deadline:** April 1, 2026
+- **Prizes:** $50,000 total
+- **Submissions:** dormant-puzzle@janestreet.com
 - **Support:** dormant-puzzle-support@janestreet.com
