@@ -1,11 +1,8 @@
-"""
-Trigger candidate lists and request-building helpers.
-"""
+"""Trigger candidate lists and request-building helpers."""
 
 from __future__ import annotations
 
 from jsinfer import ChatCompletionRequest, Message
-
 
 # ---------------------------------------------------------------------------
 # Candidate trigger phrases to probe against each model

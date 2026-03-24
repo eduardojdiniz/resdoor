@@ -1,18 +1,17 @@
-"""
-High-level async client wrapping `jsinfer.BatchInferenceClient`.
-"""
+"""High-level async client wrapping `jsinfer.BatchInferenceClient`."""
 
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 from jsinfer import (
     ActivationsRequest,
+    ActivationsResponse,
     BatchInferenceClient,
     ChatCompletionRequest,
+    ChatCompletionResponse,
     Message,
 )
-
 
 MODELS = (
     "dormant-model-warmup",
@@ -46,7 +45,7 @@ class ResdoorClient:
         model: str,
         *,
         system: str | None = None,
-    ) -> list:
+    ) -> dict[str, ChatCompletionResponse]:
         """Send *prompts* to *model* and return completion results."""
         requests = []
         for i, prompt in enumerate(prompts):
@@ -72,7 +71,7 @@ class ResdoorClient:
         model: str,
         *,
         layers: list[int] | None = None,
-    ) -> list:
+    ) -> dict[str, ActivationsResponse]:
         """Retrieve internal activations for *prompts* from *model*."""
         requests = []
         for i, prompt in enumerate(prompts):
