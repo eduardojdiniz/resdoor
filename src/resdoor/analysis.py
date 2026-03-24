@@ -7,33 +7,27 @@ import numpy as np
 import seaborn as sns
 
 
-def extract_activation_vectors(activation_results: list) -> np.ndarray:
-    """Return mean-pooled activation vectors, one row per request.
+def extract_activation_vectors(activation_results: dict[str, np.ndarray]) -> np.ndarray:
+    """Mean-pool and concatenate activation vectors across modules.
 
     Parameters
     ----------
     activation_results:
-        List of activation result objects returned by the API.  Each object
-        is expected to expose an ``activations`` attribute whose value can be
-        converted to a NumPy array of shape ``(layers, tokens, hidden)``.
+        Mapping of module name to activation array of shape ``(tokens, hidden_dim)``
+        where ``hidden_dim`` is typically 7168.  This corresponds to a single
+        ``ActivationsResponse.activations`` dict from the jsinfer API.
 
     Returns
     -------
     np.ndarray
-        Array of shape ``(n_requests, hidden)`` — the mean over layers and
-        tokens for each request.
+        1-D array of shape ``(n_modules * hidden_dim,)`` — the mean over
+        tokens for each module, concatenated in iteration order.
     """
-    vectors = []
-    for result in activation_results:
-        act = np.array(result.activations)  # (layers, tokens, hidden)
-        # Mean over layers and tokens to get a single vector per prompt
-        if act.ndim == 3:
-            # Shape: (layers, tokens, hidden) — mean over layers and tokens
-            vectors.append(act.mean(axis=(0, 1)))
-        else:
-            # Shape: (tokens, hidden) — mean over tokens only
-            vectors.append(act.mean(axis=0).flatten())
-    return np.stack(vectors)
+    vectors: list[np.ndarray] = []
+    for act in activation_results.values():
+        # act shape: (tokens, hidden_dim) -> mean-pool over tokens -> (hidden_dim,)
+        vectors.append(act.mean(axis=0))
+    return np.concatenate(vectors)
 
 
 def cosine_similarity_matrix(a: np.ndarray, b: np.ndarray) -> np.ndarray:

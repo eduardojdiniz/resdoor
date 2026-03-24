@@ -16,6 +16,9 @@ dependencies = [
     "seaborn",
     "tqdm",
     "scikit-learn",
+    "python-dotenv>=1.2.2",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -69,5 +72,9 @@ module = [
     "sklearn",
     "jsinfer",
     "tqdm",
+    "pydantic",
+    "pydantic.*",
+    "pydantic_settings",
+    "pydantic_settings.*",
 ]
 ignore_missing_imports = true

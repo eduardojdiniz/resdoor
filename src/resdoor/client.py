@@ -1,4 +1,4 @@
-"""High-level async client wrapping `jsinfer.BatchInferenceClient`."""
+"""High-level async client wrapping ``jsinfer.BatchInferenceClient``."""
 
 from __future__ import annotations
 
@@ -13,8 +13,9 @@ from jsinfer import (
     Message,
 )
 
+from resdoor.models import ProbeConfig, ResdoorSettings
+
 MODELS = (
-    "dormant-model-warmup",
     "dormant-model-1",
     "dormant-model-2",
     "dormant-model-3",
@@ -22,21 +23,20 @@ MODELS = (
 
 
 class ResdoorClient:
-    """Thin async wrapper around :class:`jsinfer.BatchInferenceClient`."""
+    """Thin async wrapper around :class:`jsinfer.BatchInferenceClient`.
 
-    def __init__(self) -> None:
-        self._client = BatchInferenceClient()
+    Parameters
+    ----------
+    settings : ResdoorSettings
+        Application settings containing the API key and default models.
+    """
 
-    async def request_access(self, email: str) -> None:
-        """Request an API key to be sent to *email*."""
-        await self._client.request_access(email)
-
-    def set_api_key(self, api_key: str) -> None:
-        """Set the API key obtained from the activation email."""
-        self._client.set_api_key(api_key)
+    def __init__(self, settings: ResdoorSettings) -> None:
+        self._settings = settings
+        self._client = BatchInferenceClient(api_key=settings.api_key)
 
     # ------------------------------------------------------------------
-    # Chat completions
+    # Low-level helpers
     # ------------------------------------------------------------------
 
     async def chat(
@@ -46,8 +46,18 @@ class ResdoorClient:
         *,
         system: str | None = None,
     ) -> dict[str, ChatCompletionResponse]:
-        """Send *prompts* to *model* and return completion results."""
-        requests = []
+        """Send *prompts* to *model* and return completion results.
+
+        Parameters
+        ----------
+        prompts : Iterable[str]
+            User-turn strings to send.
+        model : str
+            Target model identifier.
+        system : str | None
+            Optional system prompt prepended to every request.
+        """
+        requests: list[ChatCompletionRequest] = []
         for i, prompt in enumerate(prompts):
             messages: list[Message] = []
             if system is not None:
@@ -59,30 +69,179 @@ class ResdoorClient:
                     messages=messages,
                 )
             )
-        return await self._client.chat_completions(requests, model=model)
-
-    # ------------------------------------------------------------------
-    # Activations
-    # ------------------------------------------------------------------
+        return await self._client.chat_completions(requests, model=model)  # type: ignore[no-any-return]
 
     async def activations(
         self,
         prompts: Iterable[str],
         model: str,
         *,
-        layers: list[int] | None = None,
+        module_names: list[str],
     ) -> dict[str, ActivationsResponse]:
-        """Retrieve internal activations for *prompts* from *model*."""
-        requests = []
+        """Retrieve internal activations for *prompts* from *model*.
+
+        Parameters
+        ----------
+        prompts : Iterable[str]
+            User-turn strings to send.
+        model : str
+            Target model identifier.
+        module_names : list[str]
+            Model module names whose activations should be returned.
+        """
+        requests: list[ActivationsRequest] = []
         for i, prompt in enumerate(prompts):
-            kwargs: dict = {}
-            if layers is not None:
-                kwargs["layers"] = layers
             requests.append(
                 ActivationsRequest(
                     custom_id=f"entry-{i:04d}",
                     messages=[Message(role="user", content=prompt)],
-                    **kwargs,
+                    module_names=module_names,
                 )
             )
-        return await self._client.activations(requests, model=model)
+        return await self._client.activations(requests, model=model)  # type: ignore[no-any-return]
+
+    # ------------------------------------------------------------------
+    # Probe helpers (ProbeConfig → jsinfer)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_chat_requests(configs: tuple[ProbeConfig, ...]) -> dict[str, list[ChatCompletionRequest]]:
+        """Convert probe configs into per-model chat completion requests.
+
+        For each config, baseline prompts use ``custom_id = "baseline-{model}-{idx:04d}"``
+        and triggered prompts prepend the hypothesis trigger with
+        ``custom_id = "{hypothesis.id}-{model}-{idx:04d}"``.
+
+        Parameters
+        ----------
+        configs : tuple[ProbeConfig, ...]
+            Probe configurations to convert.
+
+        Returns
+        -------
+        dict[str, list[ChatCompletionRequest]]
+            Mapping of model name to the list of requests for that model.
+        """
+        by_model: dict[str, list[ChatCompletionRequest]] = {}
+        for cfg in configs:
+            model = cfg.model
+            if model not in by_model:
+                by_model[model] = []
+            for idx, prompt in enumerate(cfg.base_prompts):
+                # Baseline request (no trigger)
+                by_model[model].append(
+                    ChatCompletionRequest(
+                        custom_id=f"baseline-{model}-{idx:04d}",
+                        messages=[Message(role="user", content=prompt)],
+                    )
+                )
+                # Triggered request
+                triggered_prompt = f"{cfg.hypothesis.trigger}{prompt}"
+                by_model[model].append(
+                    ChatCompletionRequest(
+                        custom_id=f"{cfg.hypothesis.id}-{model}-{idx:04d}",
+                        messages=[Message(role="user", content=triggered_prompt)],
+                    )
+                )
+        return by_model
+
+    @staticmethod
+    def _build_activations_requests(
+        configs: tuple[ProbeConfig, ...],
+        module_names: tuple[str, ...],
+    ) -> dict[str, list[ActivationsRequest]]:
+        """Convert probe configs into per-model activations requests.
+
+        Parameters
+        ----------
+        configs : tuple[ProbeConfig, ...]
+            Probe configurations to convert.
+        module_names : tuple[str, ...]
+            Model module names whose activations should be returned.
+
+        Returns
+        -------
+        dict[str, list[ActivationsRequest]]
+            Mapping of model name to the list of requests for that model.
+        """
+        by_model: dict[str, list[ActivationsRequest]] = {}
+        for cfg in configs:
+            model = cfg.model
+            if model not in by_model:
+                by_model[model] = []
+            for idx, prompt in enumerate(cfg.base_prompts):
+                # Baseline request (no trigger)
+                by_model[model].append(
+                    ActivationsRequest(
+                        custom_id=f"baseline-{model}-{idx:04d}",
+                        messages=[Message(role="user", content=prompt)],
+                        module_names=list(module_names),
+                    )
+                )
+                # Triggered request
+                triggered_prompt = f"{cfg.hypothesis.trigger}{prompt}"
+                by_model[model].append(
+                    ActivationsRequest(
+                        custom_id=f"{cfg.hypothesis.id}-{model}-{idx:04d}",
+                        messages=[Message(role="user", content=triggered_prompt)],
+                        module_names=list(module_names),
+                    )
+                )
+        return by_model
+
+    async def probe_chat(
+        self,
+        configs: tuple[ProbeConfig, ...],
+    ) -> dict[str, ChatCompletionResponse]:
+        """Run chat-completion probes for baseline and triggered prompts.
+
+        For each :class:`ProbeConfig`, sends both baseline (unmodified) and
+        triggered (hypothesis trigger prepended) prompts and returns all
+        responses keyed by ``custom_id``.
+
+        Parameters
+        ----------
+        configs : tuple[ProbeConfig, ...]
+            Probe configurations describing hypotheses, models, and prompts.
+
+        Returns
+        -------
+        dict[str, ChatCompletionResponse]
+            All responses keyed by ``custom_id``.
+        """
+        by_model = self._build_chat_requests(configs)
+        results: dict[str, ChatCompletionResponse] = {}
+        for model, requests in by_model.items():
+            batch = await self._client.chat_completions(requests, model=model)
+            results.update(batch)
+        return results
+
+    async def probe_activations(
+        self,
+        configs: tuple[ProbeConfig, ...],
+        module_names: tuple[str, ...],
+    ) -> dict[str, ActivationsResponse]:
+        """Run activation probes for baseline and triggered prompts.
+
+        For each :class:`ProbeConfig`, sends both baseline (unmodified) and
+        triggered (hypothesis trigger prepended) prompts and returns all
+        activation responses keyed by ``custom_id``.
+
+        Parameters
+        ----------
+        configs : tuple[ProbeConfig, ...]
+            Probe configurations describing hypotheses, models, and prompts.
+        module_names : tuple[str, ...]
+            Model module names whose activations should be returned.
+
+        Returns
+        -------
+        dict[str, ActivationsResponse]
+            All responses keyed by ``custom_id``.
+        """
+        by_model = self._build_activations_requests(configs, module_names)
+        results: dict[str, ActivationsResponse] = {}
+        for model, requests in by_model.items():
+            batch = await self._client.activations(requests, model=model)
+            results.update(batch)
+        return results
