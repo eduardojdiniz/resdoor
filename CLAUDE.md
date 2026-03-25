@@ -73,8 +73,7 @@ from resdoor import (
 ## Entry Points
 
 - `puzzle.ipynb` — consolidated notebook (setup, baselines, probing, visualization, verification)
-- `run_autoresearch.sh` — autonomous API research loop (bash + Claude Code)
-- `run_local_screening.sh` — autonomous local screening loop (warmup model, no API credits)
+- `run_autoresearch.sh` — unified autonomous research harness: alternates Phase A (local warmup screening, free) and Phase B (theory + 671B API testing, paced). Configurable via `LOCAL_ITERATIONS`, `API_ITERATIONS`, `MAX_CYCLES`, `PAUSE_BETWEEN_API`.
 
 ## Data Layout
 
