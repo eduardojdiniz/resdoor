@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import random
 from collections.abc import Iterable
 
+from aiohttp import ClientResponseError
 from jsinfer import (
     ActivationsRequest,
     ActivationsResponse,
@@ -13,7 +17,11 @@ from jsinfer import (
     Message,
 )
 
-from resdoor.models import ProbeConfig, ResdoorSettings
+from resdoor.models import ProbeConfig, RateLimitConfig, ResdoorSettings
+
+_log = logging.getLogger(__name__)
+
+_DEFAULT_RATE_LIMIT = RateLimitConfig()
 
 MODELS = (
     "dormant-model-1",
@@ -29,11 +37,90 @@ class ResdoorClient:
     ----------
     settings : ResdoorSettings
         Application settings containing the API key and default models.
+    rate_limit : RateLimitConfig
+        Polling and backoff configuration.  Uses sensible defaults when
+        omitted.
     """
 
-    def __init__(self, settings: ResdoorSettings) -> None:
+    def __init__(
+        self,
+        settings: ResdoorSettings,
+        rate_limit: RateLimitConfig = _DEFAULT_RATE_LIMIT,
+    ) -> None:
         self._settings = settings
+        self.rate_limit = rate_limit
         self._client = BatchInferenceClient(api_key=settings.api_key)
+        self._client.poll_batch = self._rate_limited_poll_batch  # type: ignore[assignment]
+
+    # ------------------------------------------------------------------
+    # Rate-limited polling
+    # ------------------------------------------------------------------
+
+    async def _rate_limited_poll_batch(
+        self,
+        batch_id: str,
+        timeout: int = 86400,
+    ) -> str:
+        """Poll a batch job with exponential backoff on HTTP 429.
+
+        Parameters
+        ----------
+        batch_id : str
+            Identifier of the batch to poll.
+        timeout : int
+            Maximum wall-clock seconds before raising a timeout error.
+
+        Returns
+        -------
+        str
+            The ``resultsUrl`` of the completed batch.
+
+        Raises
+        ------
+        RuntimeError
+            If the batch enters a terminal failure state, the retry
+            budget is exhausted, or the *timeout* is exceeded.
+        """
+        interval = self.rate_limit.poll_interval
+        retries_left = self.rate_limit.max_poll_retries
+        deadline = asyncio.get_event_loop().time() + timeout
+
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                batch = await self._client.get_batch(batch_id)
+            except ClientResponseError as exc:
+                if exc.status == 429:
+                    retries_left -= 1
+                    if retries_left <= 0:
+                        raise RuntimeError(
+                            f"Batch {batch_id}: poll retry budget exhausted "
+                            f"after {self.rate_limit.max_poll_retries} 429 responses"
+                        ) from exc
+                    interval = min(
+                        interval * self.rate_limit.poll_backoff_factor,
+                        self.rate_limit.poll_max_backoff,
+                    )
+                    jitter = random.uniform(0, self.rate_limit.poll_jitter)
+                    _log.warning(
+                        "Batch %s: 429 rate-limited, backing off %.1fs (+%.2fs jitter)",
+                        batch_id,
+                        interval,
+                        jitter,
+                    )
+                    await asyncio.sleep(interval + jitter)
+                    continue
+                raise
+
+            status: str = batch["batch"]["status"]
+            match status:
+                case "completed":
+                    return batch["resultsUrl"]  # type: ignore[no-any-return]
+                case "failed" | "cancelled" | "expired" | "error":
+                    raise RuntimeError(f"Batch {batch_id} terminal status: {status}")
+
+            await asyncio.sleep(interval)
+
+        raise RuntimeError(f"Batch {batch_id} timed out after {timeout}s")
 
     # ------------------------------------------------------------------
     # Low-level helpers

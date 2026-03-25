@@ -132,3 +132,35 @@ class ExperimentRun(BaseModel):
     scores: dict[str, AnomalyScore]
     verdict: str
     timestamp: str
+
+
+class RateLimitConfig(BaseModel):
+    """Configuration for rate-limiting and polling behaviour.
+
+    Controls exponential-backoff polling of batch job status and the
+    minimum interval between batch submissions.
+
+    Parameters
+    ----------
+    poll_interval : float
+        Initial delay in seconds between status polls.
+    poll_max_backoff : float
+        Upper bound in seconds for the backoff delay.
+    poll_backoff_factor : float
+        Multiplier applied to the delay after each unsuccessful poll.
+    poll_jitter : float
+        Maximum random jitter in seconds added to each delay.
+    batch_submission_interval : float
+        Minimum gap in seconds between consecutive batch submissions.
+    max_poll_retries : int
+        Maximum number of poll attempts before giving up.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    poll_interval: float = Field(default=10.0, ge=0.1)
+    poll_max_backoff: float = Field(default=60.0, ge=1.0)
+    poll_backoff_factor: float = Field(default=2.0, ge=1.0)
+    poll_jitter: float = Field(default=1.0, ge=0.0)
+    batch_submission_interval: float = Field(default=5.0, ge=0.0)
+    max_poll_retries: int = Field(default=50, ge=1)

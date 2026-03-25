@@ -41,16 +41,16 @@ _BASELINES_DIR = Path("data/baselines")
 # Rate limiting
 # ---------------------------------------------------------------------------
 
-_MIN_BATCH_INTERVAL: float = 5.0  # seconds between batch submissions
 
-
-async def _rate_limited_delay(last_call: float) -> float:
+async def _rate_limited_delay(last_call: float, interval: float) -> float:
     """Wait if needed to maintain minimum interval between batch calls.
 
     Parameters
     ----------
     last_call : float
         Monotonic timestamp of the previous batch submission.
+    interval : float
+        Minimum seconds between consecutive batch submissions.
 
     Returns
     -------
@@ -59,8 +59,8 @@ async def _rate_limited_delay(last_call: float) -> float:
     """
     now = asyncio.get_event_loop().time()
     elapsed = now - last_call
-    if elapsed < _MIN_BATCH_INTERVAL:
-        await asyncio.sleep(_MIN_BATCH_INTERVAL - elapsed)
+    if elapsed < interval:
+        await asyncio.sleep(interval - elapsed)
     return asyncio.get_event_loop().time()
 
 
@@ -436,6 +436,7 @@ async def run_experiment_batch(
         Frozen experiment records, one per hypothesis.
     """
     mn_list = list(module_names)
+    batch_interval = client.rate_limit.batch_submission_interval
     last_call = 0.0
 
     # Build triggered prompt list once (shared across models)
@@ -453,16 +454,16 @@ async def run_experiment_batch(
         )
 
         # 1. Baselines (cached where possible)
-        last_call = await _rate_limited_delay(last_call)
+        last_call = await _rate_limited_delay(last_call, batch_interval)
         chat_baselines, act_baselines = await _fetch_baselines(client, model, base_prompts, mn_list)
 
         # 2. Batch triggered chat
-        last_call = await _rate_limited_delay(last_call)
+        last_call = await _rate_limited_delay(last_call, batch_interval)
         chat_triggered = await _batch_triggered_chat(client, model, hypothesis_prompts)
 
         # 3. Batch triggered activations
         if mn_list:
-            last_call = await _rate_limited_delay(last_call)
+            last_call = await _rate_limited_delay(last_call, batch_interval)
             act_triggered = await _batch_triggered_activations(client, model, hypothesis_prompts, mn_list)
         else:
             act_triggered = {}

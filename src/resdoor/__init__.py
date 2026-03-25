@@ -14,6 +14,7 @@ from resdoor.models import (
     ExperimentRun,
     Hypothesis,
     ProbeConfig,
+    RateLimitConfig,
     ResdoorSettings,
 )
 from resdoor.runner import run_experiment_batch
@@ -32,6 +33,7 @@ __all__ = [
     "ExperimentRun",
     "Hypothesis",
     "ProbeConfig",
+    "RateLimitConfig",
     "ResdoorClient",
     "ResdoorSettings",
     "append_runs",
