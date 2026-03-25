@@ -59,14 +59,49 @@ Baselines dir: ${SCRIPT_DIR}/data/baselines/
 ---
 Execute one full iteration of the loop described above. Start from Step 1."
 
-    # Invoke Claude Code (non-interactive, piped to log file)
+    # Invoke Claude Code with streaming JSON for real-time visibility.
+    # Raw stream goes to the JSONL log; a filtered human-readable view
+    # (assistant text + tool results) goes to stdout.
     claude --print \
+        --verbose \
+        --output-format stream-json \
+        --permission-mode bypassPermissions \
         --allowedTools "${ALLOWED_TOOLS}" \
         --max-turns 50 \
         --model claude-opus-4-6 \
         --effort high \
         -p "${PROMPT}" \
-        2>&1 | tee "${ITER_LOG}"
+        2>&1 | tee "${ITER_LOG}" | \
+        python3 -c "
+import sys, json
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        evt = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    t = evt.get('type', '')
+    if t == 'assistant' and 'message' in evt:
+        # Print assistant text content
+        msg = evt['message']
+        if isinstance(msg, dict):
+            for block in msg.get('content', []):
+                if isinstance(block, dict) and block.get('type') == 'text':
+                    print(block['text'], flush=True)
+        elif isinstance(msg, str):
+            print(msg, flush=True)
+    elif t == 'result':
+        # Final result
+        if 'subtype' in evt and evt['subtype'] == 'success':
+            print('--- iteration complete ---', flush=True)
+    elif t == 'tool_use':
+        name = evt.get('name', evt.get('tool', '?'))
+        print(f'  [tool] {name}', flush=True)
+    elif t == 'tool_result':
+        print(f'  [done]', flush=True)
+"
 
     echo ""
     echo "Iteration ${i} complete. Log saved to ${ITER_LOG}"
