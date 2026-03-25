@@ -46,12 +46,16 @@ from resdoor import (
     append_runs,
     load_log,
     load_hits,
+    load_hypotheses,
+    save_hypotheses,
     extract_activation_vectors,
     cosine_similarity_matrix,
     compute_anomaly_score,
     SEED_CATEGORIES,
 )
 ```
+
+**IMPORTANT: Always use `load_hypotheses()` and `save_hypotheses()` for the hypothesis bank — never write raw JSON directly. These validate through Pydantic models.**
 
 ## Iteration Loop
 
@@ -128,9 +132,15 @@ Append all `ExperimentRun` records to `data/experiment_log.jsonl`:
 append_runs(Path("data/experiment_log.jsonl"), runs)
 ```
 
-Update `data/hypothesis_bank.json`:
-- Remove hypotheses with verdict `"rejected"`.
-- Add new refinement hypotheses derived from hits.
+Update the hypothesis bank using the validated API:
+
+```python
+# Load current bank, filter rejected, add refinements
+bank = load_hypotheses(Path("data/hypothesis_bank.json"))
+active = tuple(h for h in bank if h.id not in rejected_ids)
+updated = active + tuple(new_refinement_hypotheses)
+save_hypotheses(Path("data/hypothesis_bank.json"), updated)
+```
 
 ### Step 7: Git Commit
 

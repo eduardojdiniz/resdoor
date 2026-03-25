@@ -8,7 +8,7 @@ from resdoor.analysis import (
     plot_activation_heatmap,
 )
 from resdoor.client import ResdoorClient
-from resdoor.log import append_runs, load_hits, load_log
+from resdoor.log import append_runs, load_hits, load_hypotheses, load_log, save_hypotheses
 from resdoor.models import (
     AnomalyScore,
     ExperimentRun,
@@ -39,9 +39,11 @@ __all__ = [
     "cosine_similarity_matrix",
     "extract_activation_vectors",
     "load_hits",
+    "load_hypotheses",
     "load_log",
     "plot_activation_heatmap",
     "run_experiment_batch",
+    "save_hypotheses",
     "score_activation_divergence",
     "score_behavioral",
     "score_consistency",
