@@ -6,8 +6,12 @@ immutable experiment records suitable for append-only JSONL logging.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+IterationStatus = Literal["running", "paused", "credit_exhausted", "completed"]
 
 
 class ResdoorSettings(BaseSettings):
@@ -164,3 +168,32 @@ class RateLimitConfig(BaseModel):
     poll_jitter: float = Field(default=1.0, ge=0.0)
     batch_submission_interval: float = Field(default=5.0, ge=0.0)
     max_poll_retries: int = Field(default=50, ge=1)
+
+
+class IterationState(BaseModel):
+    """Snapshot of the autonomous research loop's iteration state.
+
+    Parameters
+    ----------
+    iteration_number : int
+        Current iteration (1-indexed).
+    status : IterationStatus
+        Current state of the iteration.
+    tested_hypothesis_ids : frozenset[str]
+        Hypothesis IDs that have already been tested.
+    untested_hypothesis_ids : frozenset[str]
+        Hypothesis IDs in the bank but not yet tested.
+    timestamp : str
+        ISO-8601 timestamp of the last state update.
+    last_error : str | None
+        Error message when status is ``"paused"`` or ``"credit_exhausted"``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    iteration_number: int = Field(ge=1)
+    status: IterationStatus
+    tested_hypothesis_ids: frozenset[str]
+    untested_hypothesis_ids: frozenset[str]
+    timestamp: str
+    last_error: str | None = None

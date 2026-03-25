@@ -7,17 +7,27 @@ from resdoor.analysis import (
     extract_activation_vectors,
     plot_activation_heatmap,
 )
-from resdoor.client import ResdoorClient
-from resdoor.log import append_runs, load_hits, load_hypotheses, load_log, save_hypotheses
+from resdoor.client import CreditExhausted, ResdoorClient
+from resdoor.log import (
+    append_runs,
+    get_untested_hypotheses,
+    load_hits,
+    load_hypotheses,
+    load_log,
+    load_state,
+    save_hypotheses,
+    save_state,
+)
 from resdoor.models import (
     AnomalyScore,
     ExperimentRun,
     Hypothesis,
+    IterationState,
     ProbeConfig,
     RateLimitConfig,
     ResdoorSettings,
 )
-from resdoor.runner import run_experiment_batch
+from resdoor.runner import clear_credit_sentinel, run_experiment_batch
 from resdoor.scoring import (
     compute_anomaly_score,
     score_activation_divergence,
@@ -30,22 +40,28 @@ __all__ = [
     "SEED_CATEGORIES",
     "SEED_TRIGGERS",
     "AnomalyScore",
+    "CreditExhausted",
     "ExperimentRun",
     "Hypothesis",
+    "IterationState",
     "ProbeConfig",
     "RateLimitConfig",
     "ResdoorClient",
     "ResdoorSettings",
     "append_runs",
+    "clear_credit_sentinel",
     "compute_anomaly_score",
     "cosine_similarity_matrix",
     "extract_activation_vectors",
+    "get_untested_hypotheses",
     "load_hits",
     "load_hypotheses",
     "load_log",
+    "load_state",
     "plot_activation_heatmap",
     "run_experiment_batch",
     "save_hypotheses",
+    "save_state",
     "score_activation_divergence",
     "score_behavioral",
     "score_consistency",

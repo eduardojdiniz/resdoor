@@ -24,7 +24,7 @@ import numpy as np
 from jsinfer import ChatCompletionResponse
 
 from resdoor.analysis import extract_activation_vectors
-from resdoor.client import ResdoorClient
+from resdoor.client import CreditExhausted, ResdoorClient
 from resdoor.models import AnomalyScore, ExperimentRun, Hypothesis
 from resdoor.scoring import (
     compute_anomaly_score,
@@ -36,6 +36,7 @@ from resdoor.scoring import (
 logger = logging.getLogger(__name__)
 
 _BASELINES_DIR = Path("data/baselines")
+_CREDIT_SENTINEL = Path("data/.credit_exhausted")
 
 # ---------------------------------------------------------------------------
 # Rate limiting
@@ -453,20 +454,30 @@ async def run_experiment_batch(
             len(base_prompts),
         )
 
-        # 1. Baselines (cached where possible)
-        last_call = await _rate_limited_delay(last_call, batch_interval)
-        chat_baselines, act_baselines = await _fetch_baselines(client, model, base_prompts, mn_list)
-
-        # 2. Batch triggered chat
-        last_call = await _rate_limited_delay(last_call, batch_interval)
-        chat_triggered = await _batch_triggered_chat(client, model, hypothesis_prompts)
-
-        # 3. Batch triggered activations
-        if mn_list:
+        try:
+            # 1. Baselines (cached where possible)
             last_call = await _rate_limited_delay(last_call, batch_interval)
-            act_triggered = await _batch_triggered_activations(client, model, hypothesis_prompts, mn_list)
-        else:
-            act_triggered = {}
+            chat_baselines, act_baselines = await _fetch_baselines(client, model, base_prompts, mn_list)
+
+            # 2. Batch triggered chat
+            last_call = await _rate_limited_delay(last_call, batch_interval)
+            chat_triggered = await _batch_triggered_chat(client, model, hypothesis_prompts)
+
+            # 3. Batch triggered activations
+            if mn_list:
+                last_call = await _rate_limited_delay(last_call, batch_interval)
+                act_triggered = await _batch_triggered_activations(client, model, hypothesis_prompts, mn_list)
+            else:
+                act_triggered = {}
+        except CreditExhausted as exc:
+            _CREDIT_SENTINEL.parent.mkdir(parents=True, exist_ok=True)
+            _CREDIT_SENTINEL.write_text(
+                json.dumps({
+                    "timestamp": datetime.now(tz=UTC).isoformat(),
+                    "error": str(exc),
+                })
+            )
+            raise
 
         # 4. Score locally
         model_scores[model] = _score_from_pairs(
@@ -495,3 +506,15 @@ async def run_experiment_batch(
         )
 
     return tuple(runs)
+
+
+def clear_credit_sentinel() -> None:
+    """Remove the credit-exhausted sentinel file if it exists.
+
+    The sentinel is written by :func:`run_experiment_batch` when a
+    :class:`~resdoor.client.CreditExhausted` exception is caught, signalling
+    that API credits have been depleted.  Call this function once credits are
+    replenished to allow the research loop to resume.
+    """
+    if _CREDIT_SENTINEL.exists():
+        _CREDIT_SENTINEL.unlink()

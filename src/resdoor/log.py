@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from resdoor.models import ExperimentRun, Hypothesis
+from resdoor.models import ExperimentRun, Hypothesis, IterationState
 
 
 def append_runs(path: Path, runs: tuple[ExperimentRun, ...]) -> None:
@@ -111,3 +111,68 @@ def load_hypotheses(path: Path) -> tuple[Hypothesis, ...]:
     if not isinstance(raw, list):
         return ()
     return tuple(Hypothesis.model_validate(entry) for entry in raw)
+
+
+# ---------------------------------------------------------------------------
+# State management
+# ---------------------------------------------------------------------------
+
+
+def get_untested_hypotheses(
+    log_path: Path,
+    bank_path: Path,
+) -> tuple[Hypothesis, ...]:
+    """Return hypotheses from the bank that have not been tested yet.
+
+    Loads the experiment log via :func:`load_log` to collect tested hypothesis
+    IDs, then filters the hypothesis bank loaded via :func:`load_hypotheses`.
+
+    Parameters
+    ----------
+    log_path : Path
+        Filesystem path to the JSONL experiment log.
+    bank_path : Path
+        Filesystem path to the hypothesis bank JSON file.
+
+    Returns
+    -------
+    tuple[Hypothesis, ...]
+        Hypotheses present in the bank but absent from the log.
+    """
+    tested_ids: set[str] = set()
+    if log_path.exists():
+        tested_ids = {run.hypothesis.id for run in load_log(log_path)}
+    bank = load_hypotheses(bank_path)
+    return tuple(h for h in bank if h.id not in tested_ids)
+
+
+def save_state(path: Path, state: IterationState) -> None:
+    """Persist an iteration state snapshot as JSON.
+
+    Parameters
+    ----------
+    path : Path
+        Filesystem path to write the state file.
+    state : IterationState
+        The iteration state to serialise.
+    """
+    path.write_text(state.model_dump_json(indent=2))
+
+
+def load_state(path: Path) -> IterationState | None:
+    """Load and validate an iteration state from a JSON file.
+
+    Parameters
+    ----------
+    path : Path
+        Filesystem path to the state file.
+
+    Returns
+    -------
+    IterationState | None
+        The validated state, or ``None`` if *path* does not exist.
+    """
+    if not path.exists():
+        return None
+    state: IterationState = IterationState.model_validate_json(path.read_text())
+    return state

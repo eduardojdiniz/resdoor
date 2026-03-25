@@ -30,6 +30,18 @@ MODELS = (
 )
 
 
+class CreditExhausted(RuntimeError):  # noqa: N818
+    """Raised when the 429 retry budget is fully exhausted.
+
+    Attributes
+    ----------
+    batch_id : str
+        The batch identifier that triggered exhaustion.
+    retries : int
+        Total number of retries attempted before giving up.
+    """
+
+
 class ResdoorClient:
     """Thin async wrapper around :class:`jsinfer.BatchInferenceClient`.
 
@@ -77,9 +89,11 @@ class ResdoorClient:
 
         Raises
         ------
+        CreditExhausted
+            If the 429 retry budget is fully exhausted.
         RuntimeError
-            If the batch enters a terminal failure state, the retry
-            budget is exhausted, or the *timeout* is exceeded.
+            If the batch enters a terminal failure state or *timeout*
+            is exceeded.
         """
         interval = self.rate_limit.poll_interval
         retries_left = self.rate_limit.max_poll_retries
@@ -92,7 +106,7 @@ class ResdoorClient:
                 if exc.status == 429:
                     retries_left -= 1
                     if retries_left <= 0:
-                        raise RuntimeError(
+                        raise CreditExhausted(
                             f"Batch {batch_id}: poll retry budget exhausted "
                             f"after {self.rate_limit.max_poll_retries} 429 responses"
                         ) from exc
