@@ -6,8 +6,8 @@ LLM backdoor research toolkit for the Jane Street dormant LLM puzzle. Library on
 
 **Functional Core + Imperative Shell (FCIS)**:
 
-- **Core** (pure, no I/O): `models.py` (frozen Pydantic v2), `scoring.py` (pure functions), `seeds.py` (immutable constants)
-- **Shell** (async I/O): `client.py`, `runner.py`, `log.py`
+- **Core** (pure, no I/O): `models.py` (frozen Pydantic v2 + `ProbeClient` Protocol), `scoring.py` (pure functions), `seeds.py` (immutable constants)
+- **Shell** (async I/O): `client.py` (jsinfer API), `local_client.py` (PyTorch), `runner.py`, `local_runner.py`, `log.py`
 - **Analysis** (numpy/matplotlib): `analysis.py`
 
 ## Python & Layout
@@ -22,8 +22,9 @@ LLM backdoor research toolkit for the Jane Street dormant LLM puzzle. Library on
 Uses **uv** exclusively:
 
 ```
-uv sync            # install/update deps
-uv run <cmd>       # run anything in the venv
+uv sync                 # install/update deps (API-only)
+uv sync --extra local   # install with PyTorch for local screening
+uv run <cmd>            # run anything in the venv
 ```
 
 ## Lint, Format, Type Check
@@ -38,10 +39,12 @@ uv run mypy src/resdoor/           # type check (basic, not strict)
 
 | Module | Role |
 |---|---|
-| `models.py` | Frozen Pydantic v2 domain models: Hypothesis, ProbeConfig, AnomalyScore, ExperimentRun, ResdoorSettings |
+| `models.py` | Frozen Pydantic v2 domain models + `ProbeClient` Protocol |
 | `scoring.py` | Pure scoring functions: behavioral, activation divergence, consistency, composite |
-| `client.py` | Async batch API wrapper around jsinfer with ProbeConfig-based interface |
-| `runner.py` | Experiment orchestration: batch probe → score → verdict with baseline caching |
+| `client.py` | Async batch API wrapper around jsinfer, implements `ProbeClient` |
+| `local_client.py` | Local PyTorch client (`LocalClient`), implements `ProbeClient` via HuggingFace transformers |
+| `runner.py` | Experiment orchestration: accepts any `ProbeClient` backend → score → verdict |
+| `local_runner.py` | Local screening orchestration: `run_local_screening_batch` for warmup model |
 | `log.py` | JSONL I/O: append_runs, load_log, load_hits |
 | `analysis.py` | Activation vector extraction, cosine similarity, heatmap plotting |
 | `seeds.py` | Immutable seed categories and trigger candidates |
@@ -50,12 +53,14 @@ uv run mypy src/resdoor/           # type check (basic, not strict)
 
 ```python
 from resdoor import (
-    # Models
-    Hypothesis, ProbeConfig, AnomalyScore, ExperimentRun, ResdoorSettings,
+    # Models & Protocol
+    Hypothesis, ProbeConfig, AnomalyScore, ExperimentRun, ResdoorSettings, ProbeClient,
     # Scoring
     score_behavioral, score_activation_divergence, score_consistency, compute_anomaly_score,
     # Client & Runner
     ResdoorClient, run_experiment_batch,
+    # Local (requires uv sync --extra local)
+    LocalClient, run_local_screening_batch,
     # Logging
     append_runs, load_log, load_hits,
     # Analysis
@@ -68,14 +73,18 @@ from resdoor import (
 ## Entry Points
 
 - `puzzle.ipynb` — consolidated notebook (setup, baselines, probing, visualization, verification)
-- `run_autoresearch.sh` — autonomous research loop (bash + Claude Code)
+- `run_autoresearch.sh` — autonomous API research loop (bash + Claude Code)
+- `run_local_screening.sh` — autonomous local screening loop (warmup model, no API credits)
 
 ## Data Layout
 
-- `data/experiment_log.jsonl` — append-only experiment results
-- `data/hypothesis_bank.json` — active hypotheses (pruned each iteration)
+- `data/experiment_log.jsonl` — append-only API experiment results (Track 2: 671B models)
+- `data/hypothesis_bank.json` — active hypotheses for API testing
 - `data/baselines/` — cached baseline responses (SHA-256 keyed)
 - `data/program.md` — iteration directives for the autonomous loop
+- `data/local_experiment_log.jsonl` — append-only local screening results (Track 1: warmup model)
+- `data/local_hypothesis_bank.json` — hypotheses for local screening
+- `data/local_iteration_state.json` — local screening iteration state
 
 ## Rules
 

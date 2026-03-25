@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 from collections.abc import Iterable
+from pathlib import Path
 
+import numpy as np
 from aiohttp import ClientResponseError
 from jsinfer import (
     ActivationsRequest,
@@ -17,7 +20,8 @@ from jsinfer import (
     Message,
 )
 
-from resdoor.models import ProbeConfig, RateLimitConfig, ResdoorSettings
+from resdoor.analysis import extract_activation_vectors
+from resdoor.models import Hypothesis, ProbeConfig, RateLimitConfig, ResdoorSettings, prompt_hash
 
 _log = logging.getLogger(__name__)
 
@@ -346,3 +350,165 @@ class ResdoorClient:
             batch = await self._client.activations(requests, model=model)
             results.update(batch)
         return results
+
+    # ------------------------------------------------------------------
+    # Baseline caching
+    # ------------------------------------------------------------------
+
+    _BASELINES_DIR = Path("data/baselines")
+
+    @staticmethod
+    def _baseline_cache_path(model: str, prompt: str, kind: str) -> Path:
+        """Return the cache file path for a baseline response."""
+        return ResdoorClient._BASELINES_DIR / f"{model}_{prompt_hash(prompt)}_{kind}.json"
+
+    @staticmethod
+    def _load_cached_chat(model: str, prompt: str) -> str | None:
+        """Load cached baseline chat text, or ``None`` if not cached."""
+        path = ResdoorClient._baseline_cache_path(model, prompt, "chat")
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text())
+        return data.get("text")  # type: ignore[no-any-return]
+
+    @staticmethod
+    def _save_chat_cache(model: str, prompt: str, text: str) -> None:
+        """Persist baseline chat text to cache."""
+        ResdoorClient._BASELINES_DIR.mkdir(parents=True, exist_ok=True)
+        path = ResdoorClient._baseline_cache_path(model, prompt, "chat")
+        path.write_text(json.dumps({"text": text}))
+
+    @staticmethod
+    def _load_cached_activations(model: str, prompt: str) -> np.ndarray | None:
+        """Load cached baseline activation vectors, or ``None`` if not cached."""
+        npy_path = ResdoorClient._baseline_cache_path(model, prompt, "activations").with_suffix(".npy")
+        if not npy_path.exists():
+            return None
+        return np.load(npy_path)
+
+    @staticmethod
+    def _save_activations_cache(model: str, prompt: str, vecs: np.ndarray) -> None:
+        """Persist baseline activation vectors to cache."""
+        ResdoorClient._BASELINES_DIR.mkdir(parents=True, exist_ok=True)
+        npy_path = ResdoorClient._baseline_cache_path(model, prompt, "activations").with_suffix(".npy")
+        np.save(npy_path, vecs)
+
+    @staticmethod
+    def _extract_chat_text(chat_results: dict[str, ChatCompletionResponse], key: str) -> str:
+        """Extract the assistant reply text from a chat completion result."""
+        resp = chat_results.get(key)
+        if resp is None:
+            return ""
+        for msg in resp.messages:
+            if msg.role == "assistant":
+                return str(msg.content)
+        return ""
+
+    # ------------------------------------------------------------------
+    # ProbeClient Protocol methods
+    # ------------------------------------------------------------------
+
+    async def fetch_baselines(
+        self,
+        model: str,
+        prompts: tuple[str, ...],
+        module_names: list[str],
+    ) -> tuple[dict[str, str], dict[str, np.ndarray]]:
+        """Fetch baseline chat + activations for all prompts, using cache.
+
+        Batches all un-cached prompts into single API calls per endpoint.
+
+        Parameters
+        ----------
+        model : str
+            Model identifier.
+        prompts : tuple[str, ...]
+            Baseline prompts.
+        module_names : list[str]
+            Activation module names.
+
+        Returns
+        -------
+        tuple[dict[str, str], dict[str, np.ndarray]]
+            ``(chat_baselines, activation_baselines)`` keyed by prompt.
+        """
+        chat_baselines: dict[str, str] = {}
+        act_baselines: dict[str, np.ndarray] = {}
+        uncached_chat: list[str] = []
+        uncached_act: list[str] = []
+
+        for prompt in prompts:
+            cached_chat = self._load_cached_chat(model, prompt)
+            if cached_chat is not None:
+                chat_baselines[prompt] = cached_chat
+            else:
+                uncached_chat.append(prompt)
+
+            cached_act = self._load_cached_activations(model, prompt)
+            if cached_act is not None:
+                act_baselines[prompt] = cached_act
+            else:
+                uncached_act.append(prompt)
+
+        if uncached_chat:
+            _log.info("Fetching %d baseline chats for %s", len(uncached_chat), model)
+            results = await self.chat(uncached_chat, model)
+            for i, prompt in enumerate(uncached_chat):
+                text = self._extract_chat_text(results, f"entry-{i:04d}")
+                chat_baselines[prompt] = text
+                self._save_chat_cache(model, prompt, text)
+
+        if uncached_act and module_names:
+            _log.info("Fetching %d baseline activations for %s", len(uncached_act), model)
+            results = await self.activations(uncached_act, model, module_names=module_names)
+            for i, prompt in enumerate(uncached_act):
+                resp = results.get(f"entry-{i:04d}")
+                if resp is not None:
+                    vecs = extract_activation_vectors(resp.activations)
+                    act_baselines[prompt] = vecs
+                    self._save_activations_cache(model, prompt, vecs)
+
+        return chat_baselines, act_baselines
+
+    async def fetch_triggered(
+        self,
+        model: str,
+        hypothesis_prompts: list[tuple[Hypothesis, str, str]],
+        module_names: list[str],
+    ) -> tuple[dict[str, str], dict[str, np.ndarray]]:
+        """Batch all triggered requests for a model into API calls.
+
+        Parameters
+        ----------
+        model : str
+            Model identifier.
+        hypothesis_prompts : list[tuple[Hypothesis, str, str]]
+            List of ``(hypothesis, base_prompt, triggered_prompt)`` tuples.
+        module_names : list[str]
+            Activation module names.
+
+        Returns
+        -------
+        tuple[dict[str, str], dict[str, np.ndarray]]
+            ``(chat_triggered, act_triggered)`` keyed by
+            ``"{hyp_id}|{prompt_hash}"``.
+        """
+        triggered_prompts = [tp for _, _, tp in hypothesis_prompts]
+        id_keys = [f"{h.id}|{prompt_hash(bp)}" for h, bp, _ in hypothesis_prompts]
+
+        # Chat
+        _log.info("Batch chat: %d triggered prompts for %s", len(triggered_prompts), model)
+        chat_results = await self.chat(triggered_prompts, model)
+        chat_triggered = {key: self._extract_chat_text(chat_results, f"entry-{i:04d}") for i, key in enumerate(id_keys)}
+
+        # Activations
+        act_triggered: dict[str, np.ndarray] = {}
+        if module_names:
+            _log.info("Batch activations: %d triggered prompts for %s", len(triggered_prompts), model)
+            act_results = await self.activations(triggered_prompts, model, module_names=module_names)
+            for i, key in enumerate(id_keys):
+                resp = act_results.get(f"entry-{i:04d}")
+                if resp is not None:
+                    act_triggered[key] = extract_activation_vectors(resp.activations)
+
+        return chat_triggered, act_triggered

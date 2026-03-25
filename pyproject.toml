@@ -28,6 +28,11 @@ dev = [
     "jupyter",
     "notebook",
 ]
+local = [
+    "torch>=2.0",
+    "transformers>=4.40",
+    "accelerate>=0.30",
+]
 
 [dependency-groups]
 dev = [
@@ -78,5 +83,11 @@ module = [
     "pydantic.*",
     "pydantic_settings",
     "pydantic_settings.*",
+    "torch",
+    "torch.*",
+    "transformers",
+    "transformers.*",
+    "accelerate",
+    "accelerate.*",
 ]
 ignore_missing_imports = true

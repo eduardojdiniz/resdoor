@@ -1,19 +1,16 @@
 """Batch probe orchestration for the resdoor experiment pipeline.
 
 Imperative shell that composes :mod:`resdoor.client`, :mod:`resdoor.scoring`,
-and :mod:`resdoor.analysis` to run full experiment batches with baseline
-caching.
+and :mod:`resdoor.analysis` to run full experiment batches.  Accepts any
+:class:`~resdoor.models.ProbeClient` backend (API or local).
 
-Key design: batch ALL requests for a model into a single jsinfer batch job
-(upload -> submit -> poll -> download) instead of one job per prompt.  This
-reduces API round-trips from ``O(hypotheses * prompts * models)`` to
-``O(models)`` — typically from ~180 to ~6.
+Key design: batch ALL requests for a model into a single call per backend
+instead of one call per prompt.
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import uuid
@@ -21,11 +18,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
-from jsinfer import ChatCompletionResponse
 
-from resdoor.analysis import extract_activation_vectors
-from resdoor.client import CreditExhausted, ResdoorClient
-from resdoor.models import AnomalyScore, ExperimentRun, Hypothesis
+from resdoor.client import CreditExhausted
+from resdoor.models import AnomalyScore, ExperimentRun, Hypothesis, ProbeClient, prompt_hash
 from resdoor.scoring import (
     compute_anomaly_score,
     score_activation_divergence,
@@ -35,7 +30,6 @@ from resdoor.scoring import (
 
 logger = logging.getLogger(__name__)
 
-_BASELINES_DIR = Path("data/baselines")
 _CREDIT_SENTINEL = Path("data/.credit_exhausted")
 
 # ---------------------------------------------------------------------------
@@ -66,233 +60,8 @@ async def _rate_limited_delay(last_call: float, interval: float) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Baseline caching
+# Scoring (pure)
 # ---------------------------------------------------------------------------
-
-
-def _prompt_hash(prompt: str) -> str:
-    """Return a short deterministic hash for a prompt string."""
-    return hashlib.sha256(prompt.encode()).hexdigest()[:16]
-
-
-def _baseline_cache_path(model: str, prompt: str, kind: str) -> Path:
-    """Return the cache file path for a baseline response.
-
-    Parameters
-    ----------
-    model : str
-        Model identifier.
-    prompt : str
-        The baseline prompt.
-    kind : str
-        ``"chat"`` or ``"activations"``.
-    """
-    return _BASELINES_DIR / f"{model}_{_prompt_hash(prompt)}_{kind}.json"
-
-
-def _load_cached_chat(model: str, prompt: str) -> str | None:
-    """Load cached baseline chat text, or None if not cached."""
-    path = _baseline_cache_path(model, prompt, "chat")
-    if not path.exists():
-        return None
-    data = json.loads(path.read_text())
-    return data.get("text")  # type: ignore[no-any-return]
-
-
-def _save_chat_cache(model: str, prompt: str, text: str) -> None:
-    """Persist baseline chat text to cache."""
-    _BASELINES_DIR.mkdir(parents=True, exist_ok=True)
-    path = _baseline_cache_path(model, prompt, "chat")
-    path.write_text(json.dumps({"text": text}))
-
-
-def _load_cached_activations(model: str, prompt: str) -> np.ndarray | None:
-    """Load cached baseline activation vectors, or None if not cached."""
-    npy_path = _baseline_cache_path(model, prompt, "activations").with_suffix(".npy")
-    if not npy_path.exists():
-        return None
-    return np.load(npy_path)
-
-
-def _save_activations_cache(model: str, prompt: str, vecs: np.ndarray) -> None:
-    """Persist baseline activation vectors to cache."""
-    _BASELINES_DIR.mkdir(parents=True, exist_ok=True)
-    npy_path = _baseline_cache_path(model, prompt, "activations").with_suffix(".npy")
-    np.save(npy_path, vecs)
-
-
-# ---------------------------------------------------------------------------
-# Chat text extraction
-# ---------------------------------------------------------------------------
-
-
-def _extract_chat_text(chat_results: dict[str, ChatCompletionResponse], key: str) -> str:
-    """Extract the assistant reply text from a chat completion result.
-
-    Parameters
-    ----------
-    chat_results : dict[str, ChatCompletionResponse]
-        Result dict from :meth:`ResdoorClient.chat` keyed by custom_id.
-    key : str
-        The custom_id to look up.
-
-    Returns
-    -------
-    str
-        The assistant message content, or empty string if not found.
-    """
-    resp = chat_results.get(key)
-    if resp is None:
-        return ""
-    for msg in resp.messages:
-        if msg.role == "assistant":
-            return str(msg.content)
-    return ""
-
-
-# ---------------------------------------------------------------------------
-# Batched probing
-# ---------------------------------------------------------------------------
-
-
-async def _fetch_baselines(
-    client: ResdoorClient,
-    model: str,
-    prompts: tuple[str, ...],
-    module_names: list[str],
-) -> tuple[dict[str, str], dict[str, np.ndarray]]:
-    """Fetch baseline chat + activations for all prompts, using cache.
-
-    Batches all un-cached prompts into single API calls per endpoint.
-
-    Parameters
-    ----------
-    client : ResdoorClient
-        Async API client.
-    model : str
-        Model identifier.
-    prompts : tuple[str, ...]
-        Baseline prompts.
-    module_names : list[str]
-        Activation module names.
-
-    Returns
-    -------
-    tuple[dict[str, str], dict[str, np.ndarray]]
-        ``(chat_baselines, activation_baselines)`` keyed by prompt.
-    """
-    chat_baselines: dict[str, str] = {}
-    act_baselines: dict[str, np.ndarray] = {}
-    uncached_chat: list[str] = []
-    uncached_act: list[str] = []
-
-    # Check cache
-    for prompt in prompts:
-        cached_chat = _load_cached_chat(model, prompt)
-        if cached_chat is not None:
-            chat_baselines[prompt] = cached_chat
-        else:
-            uncached_chat.append(prompt)
-
-        cached_act = _load_cached_activations(model, prompt)
-        if cached_act is not None:
-            act_baselines[prompt] = cached_act
-        else:
-            uncached_act.append(prompt)
-
-    # Batch-fetch uncached chat baselines
-    if uncached_chat:
-        logger.info("Fetching %d baseline chats for %s", len(uncached_chat), model)
-        results = await client.chat(uncached_chat, model)
-        for i, prompt in enumerate(uncached_chat):
-            text = _extract_chat_text(results, f"entry-{i:04d}")
-            chat_baselines[prompt] = text
-            _save_chat_cache(model, prompt, text)
-
-    # Batch-fetch uncached activation baselines
-    if uncached_act and module_names:
-        logger.info("Fetching %d baseline activations for %s", len(uncached_act), model)
-        results = await client.activations(uncached_act, model, module_names=module_names)
-        for i, prompt in enumerate(uncached_act):
-            resp = results.get(f"entry-{i:04d}")
-            if resp is not None:
-                vecs = extract_activation_vectors(resp.activations)
-                act_baselines[prompt] = vecs
-                _save_activations_cache(model, prompt, vecs)
-
-    return chat_baselines, act_baselines
-
-
-async def _batch_triggered_chat(
-    client: ResdoorClient,
-    model: str,
-    hypothesis_prompts: list[tuple[Hypothesis, str, str]],
-) -> dict[str, str]:
-    """Batch all triggered chat requests for a model into one API call.
-
-    Parameters
-    ----------
-    client : ResdoorClient
-        Async API client.
-    model : str
-        Model identifier.
-    hypothesis_prompts : list[tuple[Hypothesis, str, str]]
-        List of ``(hypothesis, base_prompt, triggered_prompt)`` tuples.
-
-    Returns
-    -------
-    dict[str, str]
-        Mapping of ``"{hyp_id}|{prompt_hash}"`` to response text.
-    """
-    triggered_prompts = [tp for _, _, tp in hypothesis_prompts]
-    id_keys = [f"{h.id}|{_prompt_hash(bp)}" for h, bp, _ in hypothesis_prompts]
-
-    logger.info("Batch chat: %d triggered prompts for %s", len(triggered_prompts), model)
-    results = await client.chat(triggered_prompts, model)
-
-    return {key: _extract_chat_text(results, f"entry-{i:04d}") for i, key in enumerate(id_keys)}
-
-
-async def _batch_triggered_activations(
-    client: ResdoorClient,
-    model: str,
-    hypothesis_prompts: list[tuple[Hypothesis, str, str]],
-    module_names: list[str],
-) -> dict[str, np.ndarray]:
-    """Batch all triggered activation requests for a model into one API call.
-
-    Parameters
-    ----------
-    client : ResdoorClient
-        Async API client.
-    model : str
-        Model identifier.
-    hypothesis_prompts : list[tuple[Hypothesis, str, str]]
-        List of ``(hypothesis, base_prompt, triggered_prompt)`` tuples.
-    module_names : list[str]
-        Activation module names.
-
-    Returns
-    -------
-    dict[str, np.ndarray]
-        Mapping of ``"{hyp_id}|{prompt_hash}"`` to activation vectors.
-    """
-    triggered_prompts = [tp for _, _, tp in hypothesis_prompts]
-    id_keys = [f"{h.id}|{_prompt_hash(bp)}" for h, bp, _ in hypothesis_prompts]
-
-    logger.info(
-        "Batch activations: %d triggered prompts for %s",
-        len(triggered_prompts),
-        model,
-    )
-    results = await client.activations(triggered_prompts, model, module_names=module_names)
-
-    out: dict[str, np.ndarray] = {}
-    for i, key in enumerate(id_keys):
-        resp = results.get(f"entry-{i:04d}")
-        if resp is not None:
-            out[key] = extract_activation_vectors(resp.activations)
-    return out
 
 
 def _score_from_pairs(
@@ -332,7 +101,7 @@ def _score_from_pairs(
         activation_vals: list[float] = []
 
         for prompt in base_prompts:
-            key = f"{hyp.id}|{_prompt_hash(prompt)}"
+            key = f"{hyp.id}|{prompt_hash(prompt)}"
 
             # Behavioral
             baseline_text = chat_baselines.get(prompt, "")
@@ -401,27 +170,28 @@ def _compute_verdict(scores: dict[str, AnomalyScore]) -> str:
 
 
 async def run_experiment_batch(
-    client: ResdoorClient,
+    client: ProbeClient,
     hypotheses: tuple[Hypothesis, ...],
     base_prompts: tuple[str, ...],
     models: tuple[str, ...],
     module_names: tuple[str, ...] = (),
+    *,
+    batch_interval: float = 5.0,
 ) -> tuple[ExperimentRun, ...]:
     """Run a batch of experiments across hypotheses and models.
 
-    Batches ALL requests per model into single jsinfer batch jobs:
+    Delegates fetching to the *client*'s Protocol methods:
 
-    1. Fetch baselines (cached or batched)
-    2. Batch all triggered chat requests -> 1 API call per model
-    3. Batch all triggered activation requests -> 1 API call per model
-    4. Score locally from collected results
-
-    With rate limiting between batch submissions.
+    1. ``client.fetch_baselines(...)`` — baselines (cached or batched)
+    2. ``client.fetch_triggered(...)`` — triggered chat + activations
+    3. Score locally from collected results
 
     Parameters
     ----------
-    client : ResdoorClient
-        Configured async API client.
+    client : ProbeClient
+        Any backend implementing the :class:`~resdoor.models.ProbeClient`
+        protocol (e.g. :class:`~resdoor.client.ResdoorClient` or
+        :class:`~resdoor.local_client.LocalClient`).
     hypotheses : tuple[Hypothesis, ...]
         Trigger hypotheses to test.
     base_prompts : tuple[str, ...]
@@ -430,6 +200,8 @@ async def run_experiment_batch(
         Model identifiers to probe.
     module_names : tuple[str, ...]
         Activation module names for probing.
+    batch_interval : float
+        Minimum seconds between consecutive batch submissions.
 
     Returns
     -------
@@ -437,7 +209,6 @@ async def run_experiment_batch(
         Frozen experiment records, one per hypothesis.
     """
     mn_list = list(module_names)
-    batch_interval = client.rate_limit.batch_submission_interval
     last_call = 0.0
 
     # Build triggered prompt list once (shared across models)
@@ -455,31 +226,26 @@ async def run_experiment_batch(
         )
 
         try:
-            # 1. Baselines (cached where possible)
+            # 1. Baselines
             last_call = await _rate_limited_delay(last_call, batch_interval)
-            chat_baselines, act_baselines = await _fetch_baselines(client, model, base_prompts, mn_list)
+            chat_baselines, act_baselines = await client.fetch_baselines(model, base_prompts, mn_list)
 
-            # 2. Batch triggered chat
+            # 2. Triggered chat + activations
             last_call = await _rate_limited_delay(last_call, batch_interval)
-            chat_triggered = await _batch_triggered_chat(client, model, hypothesis_prompts)
-
-            # 3. Batch triggered activations
-            if mn_list:
-                last_call = await _rate_limited_delay(last_call, batch_interval)
-                act_triggered = await _batch_triggered_activations(client, model, hypothesis_prompts, mn_list)
-            else:
-                act_triggered = {}
+            chat_triggered, act_triggered = await client.fetch_triggered(model, hypothesis_prompts, mn_list)
         except CreditExhausted as exc:
             _CREDIT_SENTINEL.parent.mkdir(parents=True, exist_ok=True)
             _CREDIT_SENTINEL.write_text(
-                json.dumps({
-                    "timestamp": datetime.now(tz=UTC).isoformat(),
-                    "error": str(exc),
-                })
+                json.dumps(
+                    {
+                        "timestamp": datetime.now(tz=UTC).isoformat(),
+                        "error": str(exc),
+                    }
+                )
             )
             raise
 
-        # 4. Score locally
+        # 3. Score locally
         model_scores[model] = _score_from_pairs(
             hypotheses,
             base_prompts,

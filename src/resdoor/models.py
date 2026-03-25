@@ -6,10 +6,14 @@ immutable experiment records suitable for append-only JSONL logging.
 
 from __future__ import annotations
 
-from typing import Literal
+import hashlib
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+if TYPE_CHECKING:
+    import numpy as np
 
 IterationStatus = Literal["running", "paused", "credit_exhausted", "completed"]
 
@@ -197,3 +201,79 @@ class IterationState(BaseModel):
     untested_hypothesis_ids: frozenset[str]
     timestamp: str
     last_error: str | None = None
+
+
+def prompt_hash(prompt: str) -> str:
+    """Return a short deterministic hash for a prompt string.
+
+    Parameters
+    ----------
+    prompt : str
+        The prompt text to hash.
+
+    Returns
+    -------
+    str
+        First 16 hex characters of the SHA-256 digest.
+    """
+    return hashlib.sha256(prompt.encode()).hexdigest()[:16]
+
+
+@runtime_checkable
+class ProbeClient(Protocol):
+    """Protocol for probe inference backends.
+
+    Both :class:`~resdoor.client.ResdoorClient` (async jsinfer API) and
+    :class:`~resdoor.local_client.LocalClient` (local PyTorch) implement
+    this protocol so that :func:`~resdoor.runner.run_experiment_batch` can
+    accept either backend.
+    """
+
+    async def fetch_baselines(
+        self,
+        model: str,
+        prompts: tuple[str, ...],
+        module_names: list[str],
+    ) -> tuple[dict[str, str], dict[str, np.ndarray]]:
+        """Fetch baseline chat text and activation vectors for all prompts.
+
+        Parameters
+        ----------
+        model : str
+            Model identifier.
+        prompts : tuple[str, ...]
+            Baseline prompts.
+        module_names : list[str]
+            Activation module names.
+
+        Returns
+        -------
+        tuple[dict[str, str], dict[str, np.ndarray]]
+            ``(chat_baselines, activation_baselines)`` keyed by prompt.
+        """
+        ...
+
+    async def fetch_triggered(
+        self,
+        model: str,
+        hypothesis_prompts: list[tuple[Hypothesis, str, str]],
+        module_names: list[str],
+    ) -> tuple[dict[str, str], dict[str, np.ndarray]]:
+        """Fetch triggered chat text and activation vectors for hypotheses.
+
+        Parameters
+        ----------
+        model : str
+            Model identifier.
+        hypothesis_prompts : list[tuple[Hypothesis, str, str]]
+            List of ``(hypothesis, base_prompt, triggered_prompt)`` tuples.
+        module_names : list[str]
+            Activation module names.
+
+        Returns
+        -------
+        tuple[dict[str, str], dict[str, np.ndarray]]
+            ``(chat_triggered, act_triggered)`` keyed by
+            ``"{hyp_id}|{prompt_hash}"``.
+        """
+        ...

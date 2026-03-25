@@ -75,6 +75,32 @@ STATE_PATH = Path("data/iteration_state.json")
 - Load the last 50 runs from `data/experiment_log.jsonl` via `load_log()`.
 - **Untested hypotheses are FIRST PRIORITY.** If any exist, they must be probed before generating new ones. Carry them forward to Step 4.
 
+### Step 1.5: Read Local Screening Results
+
+If local screening has been run (`data/local_experiment_log.jsonl` exists), load local results as additional signal:
+
+```python
+from resdoor.log import load_log, load_hits
+
+LOCAL_LOG_PATH = Path("data/local_experiment_log.jsonl")
+
+if LOCAL_LOG_PATH.exists():
+    local_runs = load_log(LOCAL_LOG_PATH)
+    local_hits = load_hits(LOCAL_LOG_PATH, threshold=0.5)
+
+    # Identify top-scoring triggers from the warmup model
+    for run in sorted(local_runs, key=lambda r: max(s.overall for s in r.scores.values()), reverse=True)[:10]:
+        top_score = max(s.overall for s in run.scores.values())
+        print(f"  {run.hypothesis.trigger[:60]:60s}  overall={top_score:.3f}  verdict={run.verdict}")
+```
+
+**IMPORTANT**: Local results are SIGNAL, not ground truth. The warmup model (Qwen2 8B) may respond differently from the dormant 671B models. Use local results to:
+- Identify promising trigger categories for deeper API testing
+- Rule out triggers that score near zero locally (unlikely to work on larger models)
+- Spot patterns across hypothesis categories (which types consistently score highest?)
+
+Do NOT assume a high local score means the trigger works on dormant models. Use it to **prioritize** which hypotheses get expensive API testing.
+
 ### Step 2: Targeted Literature Review
 
 This step replaces blind history analysis with grounded research. Build understanding of WHY certain triggers score higher.
@@ -124,7 +150,9 @@ Write 2-3 specific, falsifiable theories. Each theory MUST:
 
 1. **Explain a causal mechanism** -- why does this class of trigger activate dormant behavior?
 2. **Make a testable prediction** -- what specific new trigger SHOULD score higher, and by how much?
-3. **Reference evidence** -- cite findings from Steps 2a, 2b, and 2c.
+3. **Reference evidence** -- cite findings from Steps 1.5 (local screening), 2a, 2b, and 2c.
+
+**Synthesis**: Combine local screening signals + API experiment history + web research to form theories. Local results indicate which trigger categories are structurally interesting (even on the smaller model), while API results show actual dormant model behavior. High local + low API = model-specific behavior. High local + high API = promising category. Low local = likely noise.
 
 Example theory: "The dormant behavior is triggered by tokens that the Llama-3 tokenizer maps to embedding indices above 100000 (extended vocab region). Evidence: all top-scoring triggers contain CJK characters (2a), the Llama-3 tokenizer has a 128k vocab with extended Unicode coverage (2b), and top triggers share high-index token composition (2c). Prediction: a trigger composed entirely of rare Unicode symbols (Mathematical Alphanumeric Symbols block, U+1D400-1D7FF) should score > 0.65 on model-2."
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 from resdoor.analysis import (
     cosine_similarity_matrix,
     extract_activation_vectors,
@@ -23,11 +25,18 @@ from resdoor.models import (
     ExperimentRun,
     Hypothesis,
     IterationState,
+    ProbeClient,
     ProbeConfig,
     RateLimitConfig,
     ResdoorSettings,
 )
 from resdoor.runner import clear_credit_sentinel, run_experiment_batch
+
+with contextlib.suppress(ImportError):
+    from resdoor.local_client import LocalClient
+
+with contextlib.suppress(ImportError):
+    from resdoor.local_runner import run_local_screening_batch
 from resdoor.scoring import (
     compute_anomaly_score,
     score_activation_divergence,
@@ -44,6 +53,8 @@ __all__ = [
     "ExperimentRun",
     "Hypothesis",
     "IterationState",
+    "LocalClient",
+    "ProbeClient",
     "ProbeConfig",
     "RateLimitConfig",
     "ResdoorClient",
@@ -60,6 +71,7 @@ __all__ = [
     "load_state",
     "plot_activation_heatmap",
     "run_experiment_batch",
+    "run_local_screening_batch",
     "save_hypotheses",
     "save_state",
     "score_activation_divergence",
