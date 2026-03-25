@@ -17,7 +17,8 @@ MODELS=("dormant-model-1" "dormant-model-2" "dormant-model-3")
 
 ALLOWED_TOOLS='Bash(uv run *),Bash(git *),Read,Edit,Write,Glob,Grep,WebSearch,WebFetch,mcp__plugin_perplexity_perplexity__perplexity_search,mcp__plugin_perplexity_perplexity__perplexity_research,mcp__plugin_perplexity_perplexity__perplexity_ask,mcp__plugin_perplexity_perplexity__perplexity_reason'
 
-MAX_TURNS=60
+# No artificial turn or cost limits — deep research iterations need room to
+# do lit review, web research, theory formation, probing, and scoring.
 
 mkdir -p "${LOG_DIR}"
 
@@ -116,7 +117,6 @@ Execute one full iteration of the loop described above. Start from Step 1."
         --output-format stream-json \
         --permission-mode bypassPermissions \
         --allowedTools "${ALLOWED_TOOLS}" \
-        --max-turns "${MAX_TURNS}" \
         --model claude-opus-4-6 \
         --effort high \
         -p "${PROMPT}" \
